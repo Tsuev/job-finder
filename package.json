@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "input": "^1.0.1",
+    "telegram": "^2.26.22"
+  },
+  "type": "module"
+}

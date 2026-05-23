@@ -1,3 +1,4 @@
-*.json
+bot-state.json
+db.json
 node_modules
 *.pdf
