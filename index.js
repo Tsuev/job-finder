@@ -5,19 +5,55 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BOT_TOKEN = "8544482372:AAEysYwMHvGs2aYw1Q8jUgw5gmQMIsWstxI";
-const ALLOWED_USER_ID = 344486749;
-const ADMIN_CHAT_ID = 344486749;
-const RESERVED_PASSWORD = "8447080vasman";
-
-const apiId = 32992478;
-const apiHash = "39ebd710604b035f8d3de6dd974d33eb";
-
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dbPath = path.resolve(__dirname, "db.json");
 const resumePath = path.resolve(__dirname, "resume.pdf");
 const statePath = path.resolve(__dirname, "bot-state.json");
+const envPath = path.resolve(__dirname, ".env");
+
+function loadEnvFile() {
+  if (!fs.existsSync(envPath)) return;
+  const raw = fs.readFileSync(envPath, "utf8");
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalIndex = trimmed.indexOf("=");
+    if (equalIndex <= 0) continue;
+    const key = trimmed.slice(0, equalIndex).trim();
+    const value = trimmed.slice(equalIndex + 1).trim();
+    if (!(key in process.env)) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function requiredEnv(name) {
+  const value = process.env[name];
+  if (!value) {
+    throw new Error(`Missing required env var: ${name}`);
+  }
+  return value;
+}
+
+function requiredEnvNumber(name) {
+  const raw = requiredEnv(name);
+  const num = Number(raw);
+  if (!Number.isFinite(num)) {
+    throw new Error(`Env var ${name} must be a number`);
+  }
+  return num;
+}
+
+loadEnvFile();
+
+const BOT_TOKEN = requiredEnv("BOT_TOKEN");
+const ALLOWED_USER_ID = requiredEnvNumber("ALLOWED_USER_ID");
+const ADMIN_CHAT_ID = requiredEnvNumber("ADMIN_CHAT_ID");
+const RESERVED_PASSWORD = requiredEnv("RESERVED_PASSWORD");
+
+const apiId = requiredEnvNumber("API_ID");
+const apiHash = requiredEnv("API_HASH");
 
 const ENTITY_NOT_FOUND_ERROR = "Cannot find any entity corresponding to";
 const USERNAME_NOT_FOUND_ERROR = "No user has";
@@ -165,6 +201,21 @@ function normalizePhoneDigits(phone) {
 function getAutoLimitForPhone(phone) {
   const digits = normalizePhoneDigits(phone);
   return AUTO_LIMIT_BY_PHONE[digits] ?? DEFAULT_AUTO_LIMIT;
+}
+
+function formatRunTimeMsk() {
+  const hh = String(AUTO_RUN_TIME_MSK.hour).padStart(2, "0");
+  const mm = String(AUTO_RUN_TIME_MSK.minute).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+function getSessionsSummaryLines() {
+  const sessions = Object.keys(appState.saved.sessionsByPhone || {}).filter(Boolean);
+  if (!sessions.length) return ["Сессии не сохранены."];
+  return sessions.map((phone, idx) => {
+    const limit = getAutoLimitForPhone(phone);
+    return `${idx + 1}. ${phone} -> лимит ${limit}`;
+  });
 }
 
 async function startFlow(chatId) {
@@ -532,6 +583,42 @@ async function handleUpdate(update) {
       reply_markup: {
         inline_keyboard: [[{ text: "Начать отклики", callback_data: "start_outreach" }]],
       },
+    });
+    return;
+  }
+
+  if (text === "/status") {
+    const now = getMskDateParts();
+    const sessions = Object.keys(appState.saved.sessionsByPhone || {}).filter(Boolean);
+    const statusText = [
+      "Статус бота:",
+      `- Запущен процесс: да`,
+      `- Выполняется задача: ${appState.flow.running ? "да" : "нет"}`,
+      `- Шаг flow: ${appState.flow.step}`,
+      `- Сохранено сессий: ${sessions.length}`,
+      `- Последний авторан (МСК дата): ${appState.saved.autoLastRunDateMsk || "не было"}`,
+      `- Следующий слот авторана: ежедневно в ${formatRunTimeMsk()} МСК`,
+      `- Сейчас (МСК): ${now.date} ${String(now.hour).padStart(2, "0")}:${String(now.minute).padStart(2, "0")}`,
+    ].join("\n");
+    await sendMessage(chatId, statusText);
+    return;
+  }
+
+  if (text === "/sessions") {
+    const lines = getSessionsSummaryLines();
+    await sendMessage(chatId, ["Сохраненные сессии и лимиты:", ...lines].join("\n"));
+    return;
+  }
+
+  if (text === "/run_auto_now") {
+    if (appState.flow.running) {
+      await sendMessage(chatId, "Сейчас уже идет запуск. Дождитесь завершения.");
+      return;
+    }
+    await sendMessage(chatId, "Запускаю автоотклики вручную по всем сессиям...");
+    runAutoOutreach().catch(async (error) => {
+      console.error("[manual auto] Ошибка:", error);
+      await sendMessage(chatId, `Ошибка /run_auto_now: ${String(error?.message || error)}`);
     });
     return;
   }
