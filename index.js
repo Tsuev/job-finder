@@ -244,6 +244,45 @@ function getSessionsSummaryLines() {
   });
 }
 
+function formatContactTag(contact) {
+  const username = String(contact?.username || "").trim();
+  const company = String(contact?.company || "").trim();
+  return company ? `${username} (${company})` : username;
+}
+
+function addContactToDb({ username, company = "" }) {
+  if (!fs.existsSync(dbPath)) {
+    return { ok: false, message: `Ошибка: не найден файл ${dbPath}` };
+  }
+
+  const normalizedUsername = String(username || "").trim();
+  if (!isValidUsername(normalizedUsername)) {
+    return { ok: false, message: "Невалидный username. Формат: @username" };
+  }
+
+  const raw = fs.readFileSync(dbPath, "utf8");
+  const contacts = JSON.parse(raw);
+  if (!Array.isArray(contacts)) {
+    return { ok: false, message: "Ошибка: db.json должен быть массивом контактов." };
+  }
+
+  const alreadyExists = contacts.some(
+    (item) => item && String(item.username || "").toLowerCase() === normalizedUsername.toLowerCase(),
+  );
+  if (alreadyExists) {
+    return { ok: false, message: `Контакт уже существует: ${normalizedUsername}` };
+  }
+
+  contacts.push({
+    username: normalizedUsername,
+    company: String(company || "").trim(),
+    is_sent: false,
+  });
+  fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
+
+  return { ok: true };
+}
+
 async function startFlow(chatId) {
   appState.flow.step = "waiting_limit";
   appState.flow.chatId = chatId;
@@ -422,6 +461,7 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
       if (!appState.flow.running) break;
 
       const { username } = contact;
+      const contactTag = formatContactTag(contact);
 
       try {
         const messageText = pickRandom(messageTemplatesWithResumeLink);
@@ -435,11 +475,11 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
         fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
 
         sent += 1;
-        if (chatId) await sendMessage(chatId, `✅ ${phone}: отправлено ${username}`);
+        if (chatId) await sendMessage(chatId, `✅ ${phone}: отправлено ${contactTag}`);
       } catch (error) {
         failed += 1;
         const message = String(error?.message || error);
-        if (chatId) await sendMessage(chatId, `❌ ${phone}: ошибка для ${username}: ${message}`);
+        if (chatId) await sendMessage(chatId, `❌ ${phone}: ошибка для ${contactTag}: ${message}`);
 
         if (message.toUpperCase().includes("PEER_FLOOD")) {
           stoppedByPeerFlood = true;
@@ -453,7 +493,7 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
           if (idx !== -1) {
             contacts.splice(idx, 1);
             fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
-            if (chatId) await sendMessage(chatId, `🧹 ${phone}: удален из базы ${username}`);
+            if (chatId) await sendMessage(chatId, `🧹 ${phone}: удален из базы ${contactTag}`);
           }
         }
       }
@@ -653,6 +693,28 @@ async function handleUpdate(update) {
   if (text === "/sessions") {
     const lines = getSessionsSummaryLines();
     await sendMessage(chatId, ["Сохраненные сессии и лимиты:", ...lines].join("\n"));
+    return;
+  }
+
+  if (text.startsWith("/add ")) {
+    const payload = text.slice(5).trim();
+    const [username, ...companyParts] = payload.split(/\s+/);
+    if (!username) {
+      await sendMessage(chatId, "Использование: /add @username [company]");
+      return;
+    }
+
+    const company = companyParts.join(" ").trim();
+    const result = addContactToDb({ username, company });
+    if (!result.ok) {
+      await sendMessage(chatId, result.message);
+      return;
+    }
+
+    await sendMessage(
+      chatId,
+      `Контакт добавлен: ${username}${company ? ` (${company})` : ""}.`,
+    );
     return;
   }
 
