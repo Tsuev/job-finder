@@ -696,24 +696,50 @@ async function handleUpdate(update) {
     return;
   }
 
-  if (text.startsWith("/add ")) {
-    const payload = text.slice(5).trim();
-    const [username, ...companyParts] = payload.split(/\s+/);
-    if (!username) {
-      await sendMessage(chatId, "Использование: /add @username [company]");
+  if (/^\/add(?:\s|$)/.test(text)) {
+    const body = text.replace(/^\/add(?:\s+)?/, "").trim();
+    if (!body) {
+      await sendMessage(
+        chatId,
+        [
+          "Использование:",
+          "/add @username [company]",
+          "",
+          "или множественное добавление:",
+          "/add",
+          "@username company",
+          "@username2 company2",
+        ].join("\n"),
+      );
       return;
     }
 
-    const company = companyParts.join(" ").trim();
-    const result = addContactToDb({ username, company });
-    if (!result.ok) {
-      await sendMessage(chatId, result.message);
-      return;
+    const lines = body
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const resultLines = [];
+    let added = 0;
+    let failed = 0;
+
+    for (const line of lines) {
+      const [username, ...companyParts] = line.split(/\s+/);
+      if (!username) continue;
+      const company = companyParts.join(" ").trim();
+      const result = addContactToDb({ username, company });
+      if (result.ok) {
+        added += 1;
+        resultLines.push(`✅ ${username}${company ? ` (${company})` : ""}`);
+      } else {
+        failed += 1;
+        resultLines.push(`❌ ${username}: ${result.message}`);
+      }
     }
 
     await sendMessage(
       chatId,
-      `Контакт добавлен: ${username}${company ? ` (${company})` : ""}.`,
+      [`Добавление контактов: успешно ${added}, ошибок ${failed}.`, ...resultLines].join("\n"),
     );
     return;
   }
