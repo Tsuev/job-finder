@@ -59,6 +59,9 @@ const ENTITY_NOT_FOUND_ERROR = "Cannot find any entity corresponding to";
 const USERNAME_NOT_FOUND_ERROR = "No user has";
 const USE_TERMINAL_CODE_INPUT = process.argv.includes("--terminal-code") || process.argv.includes("-t");
 const AUTO_RUN_TIME_MSK = { hour: 10, minute: 0 };
+const BOT_API_TIMEOUT_MS = 45_000;
+const GET_UPDATES_TIMEOUT_MS = 65_000;
+const PHONE_CODE_WAIT_TIMEOUT_MS = 5 * 60 * 1000;
 const AUTO_LIMIT_BY_PHONE = {
   "79259636037": 4,
   "79108693617": 4,
@@ -66,6 +69,7 @@ const AUTO_LIMIT_BY_PHONE = {
   "79298955050": 13,
 };
 const DEFAULT_AUTO_LIMIT = 4;
+const RESUME_LINK = "https://hh.ru/resume/24ce2fd5ff0faa0be20039ed1f677654747432";
 
 const messageTemplates = [
   "Добрый день! Извините за беспокойство\n\nПодскажите, пожалуйста, есть ли у вас сейчас открытые позиции для frontend-разработчиков? У меня около +5 лет опыта (Vue, React, Next, Nuxt и во всех смежных технологиях, некоторые не указаны в резюме) также есть опыт ведения проектов и команд, рассматриваю middle/senior.\n\nРезюме прикрепил ниже, буду рад обсудить детали.",
@@ -78,6 +82,9 @@ const messageTemplates = [
   "Здравствуйте! Извините за беспокойство\n\nХотел узнать, есть ли у вас открытые frontend вакансии? У меня +5 лет опыта (Vue, React, Next, Nuxt и во всех смежных технологиях, некоторые не указаны в резюме) также есть опыт ведения проектов и команд, интересуют роли уровня middle/senior.\n\nРезюме прикрепил ниже, спасибо!",
   "Добрый день! Извините за беспокойство\n\nИнтересуюсь возможностями во frontend-разработке. Опыт — около 6 лет (Vue, React, Next, Nuxt и во всех смежных технологиях, некоторые не указаны в резюме) также есть опыт ведения проектов и команд, рассматриваю middle/senior позиции.\n\nРезюме прикрепил ниже, буду рад обратной связи.",
 ];
+const messageTemplatesWithResumeLink = messageTemplates.map(
+  (text) => `${text}\n\nresume.pdf\n${RESUME_LINK}`,
+);
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const randomDelayMs = (minSec, maxSec) =>
@@ -140,12 +147,20 @@ function saveState() {
   fs.writeFileSync(statePath, JSON.stringify(data, null, 2) + "\n");
 }
 
-async function botApi(method, body) {
-  const res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function botApi(method, body, { timeoutMs = BOT_API_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`Timeout ${timeoutMs}ms`)), timeoutMs);
+  let res;
+  try {
+    res = await fetch(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
 
   const data = await res.json();
   if (!data.ok) {
@@ -335,8 +350,16 @@ async function waitForPhoneCode(chatId) {
     appState.flow.step = "waiting_code";
     await sendMessage(chatId, "Введите код из Telegram, который только что пришел.");
 
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (appState.flow.codeResolver) {
+          appState.flow.codeResolver = null;
+        }
+        reject(new Error("Истекло время ожидания кода Telegram"));
+      }, PHONE_CODE_WAIT_TIMEOUT_MS);
+
       appState.flow.codeResolver = (value) => {
+        clearTimeout(timer);
         appState.flow.code = "";
         resolve(value);
       };
@@ -401,7 +424,7 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
       const { username } = contact;
 
       try {
-        const messageText = pickRandom(messageTemplates);
+        const messageText = pickRandom(messageTemplatesWithResumeLink);
         await client.sendMessage(username, { message: messageText });
         await client.sendFile(username, {
           file: resumePath,
@@ -671,7 +694,7 @@ async function main() {
         offset,
         timeout: 30,
         allowed_updates: ["message", "callback_query"],
-      });
+      }, { timeoutMs: GET_UPDATES_TIMEOUT_MS });
 
       for (const update of updates) {
         offset = update.update_id + 1;
