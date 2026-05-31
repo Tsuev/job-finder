@@ -83,7 +83,7 @@ const messageTemplates = [
   "Добрый день! Извините за беспокойство\n\nИнтересуюсь возможностями во frontend-разработке. Опыт — около 6 лет (Vue, React, Next, Nuxt и во всех смежных технологиях, некоторые не указаны в резюме) также есть опыт ведения проектов и команд, рассматриваю middle/senior позиции.\n\nРезюме прикрепил ниже, буду рад обратной связи.",
 ];
 const messageTemplatesWithResumeLink = messageTemplates.map(
-  (text) => `${text}\n\nresume.pdf\n${RESUME_LINK}`,
+  (text) => `${text}\n\n${RESUME_LINK}`,
 );
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
