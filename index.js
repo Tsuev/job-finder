@@ -209,6 +209,17 @@ function formatRunTimeMsk() {
   return `${hh}:${mm}`;
 }
 
+function formatMemoryUsage() {
+  const toMb = (bytes) => `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  const mem = process.memoryUsage();
+  return {
+    rss: toMb(mem.rss),
+    heapUsed: toMb(mem.heapUsed),
+    heapTotal: toMb(mem.heapTotal),
+    external: toMb(mem.external),
+  };
+}
+
 function getSessionsSummaryLines() {
   const sessions = Object.keys(appState.saved.sessionsByPhone || {}).filter(Boolean);
   if (!sessions.length) return ["Сессии не сохранены."];
@@ -356,82 +367,87 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
   const client = new TelegramClient(stringSession, apiId, apiHash, {
     connectionRetries: 5,
   });
-
-  await client.start({
-    phoneNumber: async () => phone,
-    password: async () => RESERVED_PASSWORD,
-    phoneCode: async () => waitForPhoneCode(chatId),
-    onError: (error) => console.error("Auth error:", error),
-  });
-
-  appState.saved.lastPhone = phone;
-  appState.saved.sessionsByPhone[phone] = client.session.save();
-  saveState();
-
-  if (chatId) await sendMessage(chatId, `Авторизация успешна (${phone}). Начинаю рассылку.`);
-
-  const raw = fs.readFileSync(dbPath, "utf8");
-  const contacts = JSON.parse(raw);
-  const validContacts = contacts.filter((item) => item && isValidUsername(item.username));
-
-  const pendingContacts = validContacts
-    .filter((item) => item.is_sent !== true && item.is_send !== true)
-    .slice(0, dailyLimit);
-
   let sent = 0;
   let failed = 0;
   let stoppedByPeerFlood = false;
 
-  if (chatId) await sendMessage(chatId, `В работу взято контактов (${phone}): ${pendingContacts.length}`);
+  try {
+    await client.start({
+      phoneNumber: async () => phone,
+      password: async () => RESERVED_PASSWORD,
+      phoneCode: async () => waitForPhoneCode(chatId),
+      onError: (error) => console.error("Auth error:", error),
+    });
 
-  for (const contact of pendingContacts) {
-    if (!appState.flow.running) break;
+    appState.saved.lastPhone = phone;
+    appState.saved.sessionsByPhone[phone] = client.session.save();
+    saveState();
 
-    const { username } = contact;
+    if (chatId) await sendMessage(chatId, `Авторизация успешна (${phone}). Начинаю рассылку.`);
 
-    try {
-      const messageText = pickRandom(messageTemplates);
-      await client.sendMessage(username, { message: messageText });
-      await client.sendFile(username, {
-        file: resumePath,
-        forceDocument: true,
-      });
+    const raw = fs.readFileSync(dbPath, "utf8");
+    const contacts = JSON.parse(raw);
+    const validContacts = contacts.filter((item) => item && isValidUsername(item.username));
 
-      contact.is_sent = true;
-      fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
+    const pendingContacts = validContacts
+      .filter((item) => item.is_sent !== true && item.is_send !== true)
+      .slice(0, dailyLimit);
 
-      sent += 1;
-      if (chatId) await sendMessage(chatId, `✅ ${phone}: отправлено ${username}`);
-    } catch (error) {
-      failed += 1;
-      const message = String(error?.message || error);
-      if (chatId) await sendMessage(chatId, `❌ ${phone}: ошибка для ${username}: ${message}`);
+    if (chatId) await sendMessage(chatId, `В работу взято контактов (${phone}): ${pendingContacts.length}`);
 
-      if (message.toUpperCase().includes("PEER_FLOOD")) {
-        stoppedByPeerFlood = true;
-        appState.flow.running = false;
-        if (chatId) await sendMessage(chatId, `⛔️ ${phone}: получен PEER_FLOOD. Отклики остановлены.`);
-        break;
-      }
+    for (const contact of pendingContacts) {
+      if (!appState.flow.running) break;
 
-      if (message.includes(ENTITY_NOT_FOUND_ERROR) || message.includes(USERNAME_NOT_FOUND_ERROR)) {
-        const idx = contacts.indexOf(contact);
-        if (idx !== -1) {
-          contacts.splice(idx, 1);
-          fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
-          if (chatId) await sendMessage(chatId, `🧹 ${phone}: удален из базы ${username}`);
+      const { username } = contact;
+
+      try {
+        const messageText = pickRandom(messageTemplates);
+        await client.sendMessage(username, { message: messageText });
+        await client.sendFile(username, {
+          file: resumePath,
+          forceDocument: true,
+        });
+
+        contact.is_sent = true;
+        fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
+
+        sent += 1;
+        if (chatId) await sendMessage(chatId, `✅ ${phone}: отправлено ${username}`);
+      } catch (error) {
+        failed += 1;
+        const message = String(error?.message || error);
+        if (chatId) await sendMessage(chatId, `❌ ${phone}: ошибка для ${username}: ${message}`);
+
+        if (message.toUpperCase().includes("PEER_FLOOD")) {
+          stoppedByPeerFlood = true;
+          appState.flow.running = false;
+          if (chatId) await sendMessage(chatId, `⛔️ ${phone}: получен PEER_FLOOD. Отклики остановлены.`);
+          break;
+        }
+
+        if (message.includes(ENTITY_NOT_FOUND_ERROR) || message.includes(USERNAME_NOT_FOUND_ERROR)) {
+          const idx = contacts.indexOf(contact);
+          if (idx !== -1) {
+            contacts.splice(idx, 1);
+            fs.writeFileSync(dbPath, JSON.stringify(contacts, null, 2) + "\n");
+            if (chatId) await sendMessage(chatId, `🧹 ${phone}: удален из базы ${username}`);
+          }
         }
       }
+
+      if (!appState.flow.running) break;
+
+      const delay = randomDelayMs(20, 40);
+      if (chatId) await sendMessage(chatId, `⏳ ${phone}: пауза ${Math.round(delay / 1000)} сек...`);
+      await sleep(delay);
     }
-
-    if (!appState.flow.running) break;
-
-    const delay = randomDelayMs(20, 40);
-    if (chatId) await sendMessage(chatId, `⏳ ${phone}: пауза ${Math.round(delay / 1000)} сек...`);
-    await sleep(delay);
+  } finally {
+    try {
+      await client.disconnect();
+    } catch (disconnectError) {
+      console.error(`[${phone}] disconnect error:`, disconnectError);
+    }
   }
-
-  await client.disconnect();
 
   if (chatId) {
     await sendMessage(
@@ -486,7 +502,10 @@ async function runAutoOutreach() {
 }
 
 function startAutoScheduler() {
+  let schedulerBusy = false;
   setInterval(async () => {
+    if (schedulerBusy) return;
+    schedulerBusy = true;
     try {
       const now = getMskDateParts();
       const isRunTime = now.hour === AUTO_RUN_TIME_MSK.hour && now.minute === AUTO_RUN_TIME_MSK.minute;
@@ -499,6 +518,8 @@ function startAutoScheduler() {
       await runAutoOutreach();
     } catch (error) {
       console.error("[auto] Планировщик:", error);
+    } finally {
+      schedulerBusy = false;
     }
   }, 30_000);
 }
@@ -590,6 +611,7 @@ async function handleUpdate(update) {
   if (text === "/status") {
     const now = getMskDateParts();
     const sessions = Object.keys(appState.saved.sessionsByPhone || {}).filter(Boolean);
+    const mem = formatMemoryUsage();
     const statusText = [
       "Статус бота:",
       `- Запущен процесс: да`,
@@ -599,6 +621,7 @@ async function handleUpdate(update) {
       `- Последний авторан (МСК дата): ${appState.saved.autoLastRunDateMsk || "не было"}`,
       `- Следующий слот авторана: ежедневно в ${formatRunTimeMsk()} МСК`,
       `- Сейчас (МСК): ${now.date} ${String(now.hour).padStart(2, "0")}:${String(now.minute).padStart(2, "0")}`,
+      `- Память: rss=${mem.rss}, heap=${mem.heapUsed}/${mem.heapTotal}, external=${mem.external}`,
     ].join("\n");
     await sendMessage(chatId, statusText);
     return;
