@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const dbPath = path.resolve(__dirname, "db.json");
-const resumePath = path.resolve(__dirname, "resume.pdf");
+// const resumePath = path.resolve(__dirname, "resume.pdf");
 const statePath = path.resolve(__dirname, "bot-state.json");
 const envPath = path.resolve(__dirname, ".env");
 
@@ -410,10 +410,10 @@ async function runOutreachForPhone({ phone, dailyLimit, chatId = null }) {
     return;
   }
 
-  if (!fs.existsSync(resumePath)) {
-    if (chatId) await sendMessage(chatId, `Ошибка: не найден файл ${resumePath}`);
-    return;
-  }
+  // if (!fs.existsSync(resumePath)) {
+  //   if (chatId) await sendMessage(chatId, `Ошибка: не найден файл ${resumePath}`);
+  //   return;
+  // }
 
   const existingSession = appState.saved.sessionsByPhone[phone] || "";
   if (!existingSession) {
